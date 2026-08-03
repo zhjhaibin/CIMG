@@ -363,7 +363,7 @@ try {
     }
 
     Write-Progress -Activity "Compressing photos" -Completed
-    $savedBytes = [Math]::Max(0, $processedSourceBytes - $outputBytes)
+    $savedBytes = [Math]::Max([long]0, [long]($processedSourceBytes - $outputBytes))
     $savedPercent = if ($processedSourceBytes -gt 0) { [Math]::Round(($savedBytes / $processedSourceBytes) * 100, 1) } else { 0 }
     $sourceMB = [Math]::Round($processedSourceBytes / 1MB, 1)
     $outputMB = [Math]::Round($outputBytes / 1MB, 1)
