@@ -15,6 +15,9 @@ param(
     [ValidateRange(0, 1048576)]
     [int]$MinSizeKB = 400,
 
+    [ValidateRange(1, 64)]
+    [int]$Parallel = [Math]::Min(4, [Math]::Max(1, [Environment]::ProcessorCount)),
+
     [ValidateNotNullOrEmpty()]
     [string]$OutputFolderName = "_compressed",
 
@@ -239,6 +242,23 @@ function Replace-SourceFile {
     Remove-Item -LiteralPath $backupPath -Force
 }
 
+function ConvertTo-CommandLineArgument {
+    param(
+        [AllowEmptyString()]
+        [string]$Argument
+    )
+
+    if ([string]::IsNullOrEmpty($Argument)) {
+        return '""'
+    }
+
+    if ($Argument -notmatch '[\s"]') {
+        return $Argument
+    }
+
+    return '"' + $Argument.Replace('"', '\"') + '"'
+}
+
 try {
     $ffmpeg = Find-Ffmpeg
 
@@ -266,19 +286,20 @@ try {
     $failedCount = 0
     [long]$processedSourceBytes = 0
     [long]$outputBytes = 0
+    $completedCount = 0
+    $pendingTasks = New-Object System.Collections.Generic.List[object]
 
     Write-Host "Found $($jobs.Count) image(s)."
 
     for ($index = 0; $index -lt $jobs.Count; $index++) {
         $job = $jobs[$index]
         $sourceFile = Get-Item -LiteralPath $job.Source
-        $progress = [Math]::Round((($index + 1) / $jobs.Count) * 100)
-        Write-Progress -Activity "Compressing photos" -Status "$($index + 1)/$($jobs.Count): $($sourceFile.Name)" -PercentComplete $progress
 
         if (-not $Cover -and (Test-Path -LiteralPath $job.Target) -and -not $Overwrite) {
             $processedSourceBytes += $sourceFile.Length
             $outputBytes += (Get-Item -LiteralPath $job.Target).Length
             $skippedCount++
+            $completedCount++
             Write-Host "SKIP  $($sourceFile.Name) (output exists)"
             continue
         }
@@ -295,6 +316,7 @@ try {
             $processedSourceBytes += $sourceFile.Length
             $outputBytes += $sourceFile.Length
             $skippedCount++
+            $completedCount++
             $smallFileAction = if ($Cover) { "SKIP" } else { "COPY" }
             Write-Host "$smallFileAction  $($sourceFile.Name) (smaller than $MinSizeKB KB)"
             continue
@@ -312,53 +334,135 @@ try {
         $ffmpegArguments += Get-CodecArguments -Extension $job.OutputExtension -RequestedQuality $Quality
         $ffmpegArguments += $temporaryPath
 
-        try {
-            & $ffmpeg @ffmpegArguments
-            if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $temporaryPath)) {
-                throw "ffmpeg exited with code $LASTEXITCODE"
+        $argumentLine = (($ffmpegArguments | ForEach-Object { ConvertTo-CommandLineArgument -Argument $_ }) -join " ")
+        $pendingTasks.Add([PSCustomObject]@{
+            SourcePath = $sourceFile.FullName
+            SourceName = $sourceFile.Name
+            SourceLength = [long]$sourceFile.Length
+            SourceLastWriteTime = $sourceFile.LastWriteTime
+            TargetPath = $job.Target
+            TemporaryPath = $temporaryPath
+            ArgumentLine = $argumentLine
+        })
+    }
+
+    $workerCount = if ($pendingTasks.Count -gt 0) { [Math]::Min($Parallel, $pendingTasks.Count) } else { 0 }
+    Write-Host "Parallel workers: $workerCount"
+    $activeTasks = New-Object System.Collections.ArrayList
+    $nextTaskIndex = 0
+
+    try {
+        while ($nextTaskIndex -lt $pendingTasks.Count -or $activeTasks.Count -gt 0) {
+            while ($activeTasks.Count -lt $workerCount -and $nextTaskIndex -lt $pendingTasks.Count) {
+                $task = $pendingTasks[$nextTaskIndex]
+                $nextTaskIndex++
+
+                try {
+                    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+                    $startInfo.FileName = $ffmpeg
+                    $startInfo.Arguments = $task.ArgumentLine
+                    $startInfo.UseShellExecute = $false
+                    $startInfo.CreateNoWindow = $true
+                    $startInfo.RedirectStandardError = $true
+                    $process = New-Object System.Diagnostics.Process
+                    $process.StartInfo = $startInfo
+                    if (-not $process.Start()) {
+                        throw "Failed to start ffmpeg."
+                    }
+                    $errorReadTask = $process.StandardError.ReadToEndAsync()
+                    [void]$activeTasks.Add([PSCustomObject]@{ Task = $task; Process = $process; ErrorReadTask = $errorReadTask })
+                }
+                catch {
+                    if (Test-Path -LiteralPath $task.TemporaryPath) {
+                        Remove-Item -LiteralPath $task.TemporaryPath -Force
+                    }
+                    $failedCount++
+                    $completedCount++
+                    Write-Warning "FAILED $($task.SourcePath): $($_.Exception.Message)"
+                }
             }
 
-            $temporaryFile = Get-Item -LiteralPath $temporaryPath
-            $recordAsCompressed = $true
-            if ($OutputFormat -eq "same" -and $temporaryFile.Length -ge $sourceFile.Length) {
-                Remove-Item -LiteralPath $temporaryPath -Force
-                if ($Cover) {
-                    $recordAsCompressed = $false
-                    Write-Host "SKIP  $($sourceFile.Name) (re-encoding was not smaller)"
-                }
-                else {
-                    Copy-Item -LiteralPath $sourceFile.FullName -Destination $job.Target -Force
-                    Write-Host "COPY  $($sourceFile.Name) (re-encoding was not smaller)"
-                }
-            }
-            else {
-                if ($Cover) {
-                    Replace-SourceFile -TemporaryPath $temporaryPath -SourcePath $sourceFile.FullName
-                    Write-Host "COVER $($sourceFile.Name)"
-                }
-                else {
-                    Move-Item -LiteralPath $temporaryPath -Destination $job.Target -Force
-                    Write-Host "OK    $($sourceFile.Name)"
-                }
+            $finishedTasks = @($activeTasks | Where-Object { $_.Process.HasExited })
+            if ($finishedTasks.Count -eq 0) {
+                Start-Sleep -Milliseconds 50
+                continue
             }
 
-            $outputFile = Get-Item -LiteralPath $job.Target
-            $outputFile.LastWriteTime = $sourceFile.LastWriteTime
-            $processedSourceBytes += $sourceFile.Length
-            $outputBytes += $outputFile.Length
-            if ($recordAsCompressed) {
-                $successCount++
-            }
-            else {
-                $skippedCount++
+            foreach ($runtimeTask in $finishedTasks) {
+                [void]$activeTasks.Remove($runtimeTask)
+                $task = $runtimeTask.Task
+
+                try {
+                    $runtimeTask.Process.WaitForExit()
+                    $exitCode = $runtimeTask.Process.ExitCode
+                    $errorText = ([string]$runtimeTask.ErrorReadTask.Result).Trim()
+
+                    if ($exitCode -ne 0 -or -not (Test-Path -LiteralPath $task.TemporaryPath)) {
+                        $failureDetail = if ([string]::IsNullOrWhiteSpace($errorText)) { "ffmpeg exited with code $exitCode" } else { $errorText }
+                        throw $failureDetail
+                    }
+
+                    $temporaryFile = Get-Item -LiteralPath $task.TemporaryPath
+                    $recordAsCompressed = $true
+                    if ($OutputFormat -eq "same" -and $temporaryFile.Length -ge $task.SourceLength) {
+                        Remove-Item -LiteralPath $task.TemporaryPath -Force
+                        if ($Cover) {
+                            $recordAsCompressed = $false
+                            Write-Host "SKIP  $($task.SourceName) (re-encoding was not smaller)"
+                        }
+                        else {
+                            Copy-Item -LiteralPath $task.SourcePath -Destination $task.TargetPath -Force
+                            Write-Host "COPY  $($task.SourceName) (re-encoding was not smaller)"
+                        }
+                    }
+                    else {
+                        if ($Cover) {
+                            Replace-SourceFile -TemporaryPath $task.TemporaryPath -SourcePath $task.SourcePath
+                            Write-Host "COVER $($task.SourceName)"
+                        }
+                        else {
+                            Move-Item -LiteralPath $task.TemporaryPath -Destination $task.TargetPath -Force
+                            Write-Host "OK    $($task.SourceName)"
+                        }
+                    }
+
+                    $outputFile = Get-Item -LiteralPath $task.TargetPath
+                    $outputFile.LastWriteTime = $task.SourceLastWriteTime
+                    $processedSourceBytes += $task.SourceLength
+                    $outputBytes += $outputFile.Length
+                    if ($recordAsCompressed) {
+                        $successCount++
+                    }
+                    else {
+                        $skippedCount++
+                    }
+                }
+                catch {
+                    if (Test-Path -LiteralPath $task.TemporaryPath) {
+                        Remove-Item -LiteralPath $task.TemporaryPath -Force
+                    }
+                    $failedCount++
+                    Write-Warning "FAILED $($task.SourcePath): $($_.Exception.Message)"
+                }
+                finally {
+                    $runtimeTask.Process.Dispose()
+                    $completedCount++
+                    $progress = [Math]::Round(($completedCount / $jobs.Count) * 100)
+                    Write-Progress -Activity "Compressing photos" -Status "$completedCount/$($jobs.Count): $($task.SourceName)" -PercentComplete $progress
+                }
             }
         }
-        catch {
-            if (Test-Path -LiteralPath $temporaryPath) {
-                Remove-Item -LiteralPath $temporaryPath -Force
+    }
+    finally {
+        foreach ($runtimeTask in @($activeTasks)) {
+            if (-not $runtimeTask.Process.HasExited) {
+                $runtimeTask.Process.Kill()
+                $runtimeTask.Process.WaitForExit()
             }
-            $failedCount++
-            Write-Warning "FAILED $($sourceFile.FullName): $($_.Exception.Message)"
+            $runtimeTask.Process.Dispose()
+            if (Test-Path -LiteralPath $runtimeTask.Task.TemporaryPath) {
+                Remove-Item -LiteralPath $runtimeTask.Task.TemporaryPath -Force
+            }
         }
     }
 
