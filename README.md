@@ -10,11 +10,37 @@
 
 ## 安装
 
-### 1. 下载 CIMG
+### 一键安装（推荐）
+
+在 PowerShell 中复制运行一条命令：
+
+```powershell
+irm https://raw.githubusercontent.com/zhjhaibin/CIMG/main/install.ps1 | iex
+```
+
+脚本会自动下载最新版本、解压到 `%LOCALAPPDATA%\CIMG` 并加入当前用户 PATH。完成后重新打开终端，即可在任意目录使用 `cimg`。
+
+GitHub 访问不稳定时，可用镜像加速：
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/zhjhaibin/CIMG/main/install.ps1))) -DownloadMirror "https://ghfast.top"
+```
+
+自定义安装目录：
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/zhjhaibin/CIMG/main/install.ps1))) -InstallDir "D:\Tools\CIMG"
+```
+
+重复运行即覆盖升级。卸载时运行安装目录中的 `uninstall.ps1`：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\CIMG\uninstall.ps1"
+```
+
+### 手动安装
 
 从 [GitHub Releases](https://github.com/zhjhaibin/CIMG/releases/latest) 下载最新版 Windows 压缩包，解压到一个固定目录，例如 `C:\Tools\CIMG`。
-
-### 2. 安装 FFmpeg
 
 前往 [FFmpeg 官方下载页面](https://ffmpeg.org/download.html) 获取 Windows 版本。安装完成后，在 PowerShell 中检查：
 
@@ -24,9 +50,7 @@ ffmpeg -version
 
 能够显示版本信息即表示安装成功。也可以不配置 FFmpeg 的 PATH，直接把 `ffmpeg.exe` 放到 CIMG 目录。
 
-### 3. 将 CIMG 添加到当前用户 PATH
-
-在 CIMG 解压目录中打开 PowerShell，复制运行：
+然后将 CIMG 目录添加到当前用户 PATH。在 CIMG 解压目录中打开 PowerShell，复制运行：
 
 ```powershell
 $cimgDirectory = (Get-Location).Path
