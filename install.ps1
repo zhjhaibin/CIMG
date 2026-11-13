@@ -1,41 +1,39 @@
-﻿#requires -Version 5.1
 <#
 .SYNOPSIS
-    CIMG 一键安装脚本：下载最新版本、解压并加入用户 PATH。
+    CIMG one-command installer: downloads the latest release, extracts it
+    and adds it to the current user PATH.
 
 .DESCRIPTION
-    推荐用法（在 PowerShell 中复制运行一条命令即可安装）：
+    Recommended usage (copy-paste a single line in PowerShell):
 
         irm https://raw.githubusercontent.com/zhjhaibin/CIMG/main/install.ps1 | iex
 
-    自定义安装目录：
+    Custom install directory:
 
         & ([scriptblock]::Create((irm https://raw.githubusercontent.com/zhjhaibin/CIMG/main/install.ps1))) -InstallDir "D:\Tools\CIMG"
 
-    GitHub 访问不稳定时，可用镜像加速下载（例如）：
+    Mirror acceleration when GitHub is slow or unreachable:
 
         & ([scriptblock]::Create((irm https://raw.githubusercontent.com/zhjhaibin/CIMG/main/install.ps1))) -DownloadMirror "https://ghfast.top"
 
-    脚本可重复运行，会覆盖升级已安装的版本。
-
-.EXAMPLE
-    irm https://raw.githubusercontent.com/zhjhaibin/CIMG/main/install.ps1 | iex
+    Re-running the script upgrades the existing installation in place.
 #>
 [CmdletBinding()]
 param(
-    # 安装目录；默认安装到当前用户的本地应用数据目录
+    # Installation directory; defaults to the per-user local app data folder.
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "CIMG"),
 
-    # GitHub 仓库（owner/name），一般无需修改
+    # GitHub repository (owner/name). Normally no need to change.
     [string]$Repository = "zhjhaibin/CIMG",
 
-    # 下载镜像前缀（如 https://ghfast.top），用于 GitHub 直连不稳定时加速；留空则直连
+    # Download mirror prefix (e.g. https://ghfast.top) used when GitHub direct
+    # downloads are unstable. Leave empty for direct download.
     [string]$DownloadMirror = ""
 )
 
 $ErrorActionPreference = "Stop"
 
-# Windows PowerShell 5.1 默认可能未启用 TLS 1.2，GitHub 需要
+# Windows PowerShell 5.1 may not enable TLS 1.2 by default; GitHub requires it.
 try {
     [Net.ServicePointManager]::SecurityProtocol =
         [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -45,7 +43,7 @@ function Write-Step([string]$Message) {
     Write-Host "==> $Message" -ForegroundColor Cyan
 }
 
-# 带重试的网络请求
+# Network request with retries.
 function Invoke-WithRetry {
     param(
         [scriptblock]$Action,
@@ -58,14 +56,15 @@ function Invoke-WithRetry {
         } catch {
             if ($attempt -eq $MaxAttempts) { throw }
             if ($Description) {
-                Write-Host ("    第 {0} 次尝试失败，正在重试（{1}/{2}）..." -f $attempt, $attempt, ($MaxAttempts - 1)) -ForegroundColor DarkYellow
+                Write-Host ("    Attempt {0} failed, retrying ({1}/{2})..." -f $attempt, $attempt, ($MaxAttempts - 1)) -ForegroundColor DarkYellow
             }
             Start-Sleep -Seconds 2
         }
     }
 }
 
-# 获取最新版本及下载地址：优先 GitHub API，失败时回退到 releases/latest 重定向解析
+# Get the latest release: prefer the GitHub API, fall back to parsing the
+# releases/latest redirect (works without API access).
 function Get-LatestRelease {
     $releaseApiUrl = "https://api.github.com/repos/$Repository/releases/latest"
     try {
@@ -75,10 +74,11 @@ function Get-LatestRelease {
         if ($release.tag_name -and $release.assets) { return $release }
     } catch { }
 
-    # 回退：releases/latest 会 302 到 /tag/<版本>，据此拼出下载地址（不依赖 API）
+    # Fallback: releases/latest 302-redirects to /tag/<version>; build the
+    # download URL from that tag without touching the API.
     try {
-        Write-Host "    API 不可用，改用重定向方式解析最新版本..." -ForegroundColor DarkYellow
-        $tag = Invoke-WithRetry -Description "版本重定向" -Action {
+        Write-Host "    API unavailable, resolving latest version via redirect..." -ForegroundColor DarkYellow
+        $tag = Invoke-WithRetry -Description "version redirect" -Action {
             $request = [Net.WebRequest]::Create("https://github.com/$Repository/releases/latest")
             $request.AllowAutoRedirect = $false
             $request.Timeout = 20000
@@ -88,7 +88,7 @@ function Get-LatestRelease {
             } finally {
                 $response.Close()
             }
-            if ($location -notmatch '/tag/(.+?)/?$') { throw "无法从重定向地址解析版本号：$location" }
+            if ($location -notmatch '/tag/(.+?)/?$') { throw "Cannot parse version from redirect: $location" }
             $Matches[1]
         }
 
@@ -100,16 +100,16 @@ function Get-LatestRelease {
         }
     } catch { }
 
-    throw "无法连接 GitHub 获取版本信息。请检查网络后重试，或手动下载：https://github.com/$Repository/releases"
+    throw "Cannot reach GitHub to resolve the latest version. Check your network and retry, or download manually from: https://github.com/$Repository/releases"
 }
 
 Write-Host ""
-Write-Host "CIMG 安装程序" -ForegroundColor Green
-Write-Host "    安装目录：$InstallDir"
+Write-Host "CIMG installer" -ForegroundColor Green
+Write-Host "    Install directory: $InstallDir"
 Write-Host ""
 
-# 1. 查询最新版本
-Write-Step "正在查询最新版本"
+# 1. Resolve the latest version.
+Write-Step "Resolving latest version"
 $release = Get-LatestRelease
 $version = $release.tag_name
 $asset = $release.assets |
@@ -117,30 +117,31 @@ $asset = $release.assets |
     Select-Object -First 1
 
 if ($null -eq $asset) {
-    throw "版本 $version 中没有找到 Windows 安装包（CIMG-*-Windows-x64.zip）。"
+    throw "Release $version does not contain a Windows package (CIMG-*-Windows-x64.zip)."
 }
 
-Write-Host "    最新版本：$version"
+Write-Host "    Latest version: $version"
 
 $alreadyInstalled = Test-Path -LiteralPath (Join-Path $InstallDir "cimg.exe") -PathType Leaf
 if ($alreadyInstalled) {
-    Write-Host "    检测到已安装的 CIMG，将覆盖升级。"
+    Write-Host "    Existing installation detected; upgrading in place."
 }
 
-# 2. 下载
-Write-Step ("正在下载 " + $asset.name)
+# 2. Download.
+Write-Step ("Downloading " + $asset.name)
 $tempZip = Join-Path ([IO.Path]::GetTempPath()) $asset.name
 $downloadUrl = $asset.browser_download_url
 if ($DownloadMirror) {
     $downloadUrl = $DownloadMirror.TrimEnd("/") + "/" + $downloadUrl
-    Write-Host "    使用镜像：$DownloadMirror"
+    Write-Host "    Using mirror: $DownloadMirror"
 }
-Invoke-WithRetry -Description "下载" -MaxAttempts 3 -Action {
+Invoke-WithRetry -Description "download" -MaxAttempts 3 -Action {
     Invoke-WebRequest -Uri $downloadUrl -OutFile $tempZip -UseBasicParsing
 }
 
-# 3. 解压（直接用 .NET API，兼容 Windows PowerShell 5.1 与 PowerShell 7，支持覆盖升级）
-Write-Step ("正在解压到 " + $InstallDir)
+# 3. Extract using the .NET API directly (works on both Windows PowerShell 5.1
+#    and PowerShell 7, and overwrites files so re-running upgrades in place).
+Write-Step ("Extracting to " + $InstallDir)
 New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [System.IO.Compression.ZipFile]::OpenRead($tempZip)
@@ -161,44 +162,44 @@ try {
 Remove-Item -LiteralPath $tempZip -Force -ErrorAction SilentlyContinue
 
 if (-not (Test-Path -LiteralPath (Join-Path $InstallDir "cimg.exe") -PathType Leaf)) {
-    throw "安装失败：解压后未找到 cimg.exe。"
+    throw "Installation failed: cimg.exe not found after extraction."
 }
 
-# 4. 添加到当前用户 PATH（幂等）
-Write-Step "正在添加到当前用户 PATH"
+# 4. Add to the current user PATH (idempotent).
+Write-Step "Adding to current user PATH"
 $currentUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
 $pathEntries = @($currentUserPath -split ";" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 if ($pathEntries -notcontains $InstallDir) {
     $newUserPath = (($pathEntries + $InstallDir) -join ";")
     [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
-    Write-Host "    已添加：$InstallDir"
+    Write-Host "    Added: $InstallDir"
 } else {
-    Write-Host "    PATH 中已存在，跳过。"
+    Write-Host "    Already present in PATH; skipped."
 }
 
-# 5. 检查 FFmpeg（cimg 运行时依赖）
+# 5. Check FFmpeg (required by cimg at runtime).
 $ffmpegCommand = Get-Command ffmpeg -ErrorAction SilentlyContinue
 $ffmpegBundled = Test-Path -LiteralPath (Join-Path $InstallDir "ffmpeg.exe") -PathType Leaf
 
 if ($null -ne $ffmpegCommand -or $ffmpegBundled) {
-    Write-Step "FFmpeg 检查通过"
+    Write-Step "FFmpeg check passed"
 } else {
-    Write-Host "==> FFmpeg 检查" -ForegroundColor Yellow
-    Write-Host "    未检测到 FFmpeg。运行 cimg 之前需要先安装：" -ForegroundColor Yellow
+    Write-Host "==> FFmpeg check" -ForegroundColor Yellow
+    Write-Host "    FFmpeg was not detected. cimg needs it to compress images:" -ForegroundColor Yellow
     Write-Host "      winget install Gyan.FFmpeg" -ForegroundColor Yellow
-    Write-Host "    或者把 ffmpeg.exe 直接放到 $InstallDir 目录中。" -ForegroundColor Yellow
+    Write-Host "    Or place ffmpeg.exe directly into $InstallDir." -ForegroundColor Yellow
 }
 
-# 6. 完成
+# 6. Done.
 Write-Host ""
-Write-Host "安装完成！" -ForegroundColor Green
+Write-Host "Installation complete!" -ForegroundColor Green
 Write-Host ""
-Write-Host "请完全关闭并重新打开终端，然后在任意照片目录运行："
+Write-Host "Fully close and reopen your terminal, then run in any photo folder:"
 Write-Host ""
 Write-Host "    cimg" -ForegroundColor White
 Write-Host ""
-Write-Host "当前窗口想立即使用的话，可以先运行："
+Write-Host "To use it in the current window right away, run first:"
 Write-Host ""
 Write-Host ('    $env:Path += ";' + $InstallDir + '"') -ForegroundColor White
 Write-Host ""
-Write-Host "卸载：运行 CIMG 目录中的 uninstall.ps1，或参考 README。" -ForegroundColor DarkGray
+Write-Host "Uninstall: run uninstall.ps1 next to cimg.exe in the install directory." -ForegroundColor DarkGray
