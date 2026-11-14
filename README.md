@@ -12,24 +12,30 @@
 
 ### 一键安装（推荐）
 
-在 PowerShell 中复制运行一条命令：
+在 PowerShell 中复制运行一条命令。GitHub 可达时用：
 
 ```powershell
 irm https://raw.githubusercontent.com/zhjhaibin/CIMG/main/install.ps1 | iex
 ```
 
-脚本会自动下载最新版本、解压到 `%LOCALAPPDATA%\CIMG` 并加入当前用户 PATH。完成后重新打开终端，即可在任意目录使用 `cimg`。
-
-GitHub 访问不稳定时，可用镜像加速：
+国内访问 GitHub 不稳定时，用 jsDelivr 入口（效果完全相同）：
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/zhjhaibin/CIMG/main/install.ps1))) -DownloadMirror "https://ghfast.top"
+irm https://cdn.jsdelivr.net/gh/zhjhaibin/CIMG@main/install.ps1 | iex
+```
+
+脚本会自动下载最新版本、解压到 `%LOCALAPPDATA%\CIMG` 并写入当前用户 PATH。**重新打开终端**后即可在任意目录使用 `cimg`（已打开的窗口无法被自动刷新，Windows 机制限制；脚本结束时会把一行可立即生效的命令打印出来，复制运行即可）。
+
+安装器下载时默认先直连 GitHub，失败后自动改用内置镜像（ghfast.top、gh-proxy.com）重试，无需手动配置；也可固定镜像：
+
+```powershell
+& ([scriptblock]::Create((irm https://cdn.jsdelivr.net/gh/zhjhaibin/CIMG@main/install.ps1))) -DownloadMirror "https://ghfast.top"
 ```
 
 自定义安装目录：
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/zhjhaibin/CIMG/main/install.ps1))) -InstallDir "D:\Tools\CIMG"
+& ([scriptblock]::Create((irm https://cdn.jsdelivr.net/gh/zhjhaibin/CIMG@main/install.ps1))) -InstallDir "D:\Tools\CIMG"
 ```
 
 重复运行即覆盖升级。卸载时运行安装目录中的 `uninstall.ps1`：
